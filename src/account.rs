@@ -1,15 +1,13 @@
+use crate::{Cluster, Error};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use fantoccini::{Client, ClientBuilder};
+use fantoccini::Client;
 use select::{
     document::Document,
     predicate::{Class, Name, Predicate},
 };
-use serde_json::map::Map;
 use std::thread;
 use std::time::Duration;
 use tokio::sync::Mutex;
-
-pub type Error = Box<dyn std::error::Error>;
 
 #[derive(Default, Debug)]
 pub struct AccountDetails {
@@ -18,31 +16,15 @@ pub struct AccountDetails {
     pub owner: String,
     pub data_size: f64,
     pub executable: bool,
-    pub recent_transactions: Vec<TransactionSummary>,
+    pub recent_transactions: Vec<Transaction>,
 }
 
 #[derive(Default, Debug)]
-pub struct TransactionSummary {
+pub struct Transaction {
     pub signature: String,
     pub block: u64,
     pub time: String,
     pub result: String,
-}
-
-pub enum Cluster {
-    Devnet,
-    Mainnet,
-}
-
-pub async fn new_webdriver_client() -> Result<Mutex<Client>, Error> {
-    let mut caps = Map::new();
-    let options = serde_json::json!({ "args": ["--headless", "--disable-gpu"] });
-    caps.insert("goog:chromeOptions".to_string(), options);
-    let webdriver_client = ClientBuilder::rustls()
-        .capabilities(caps)
-        .connect("http://localhost:4444")
-        .await?;
-    Ok(Mutex::new(webdriver_client))
 }
 
 pub async fn get_account_details(
@@ -118,15 +100,13 @@ pub async fn get_account_details(
         _ => panic!("Unexpected result"),
     };
 
-    let mut txns: Vec<TransactionSummary> = vec![];
-
     let mut list = document.find(Class("list"));
-
     _ = list.next();
-    let transactions = list.next().unwrap().children(); //.find(Name("tr"));
+    let transaction_nodes = list.next().unwrap().children();
+    let mut transactions: Vec<Transaction> = vec![];
 
-    for transaction in transactions {
-        if txns.len() == txns_count {
+    for transaction in transaction_nodes {
+        if transactions.len() == txns_count {
             break;
         }
         let mut details = transaction.find(Name("td"));
@@ -152,14 +132,14 @@ pub async fn get_account_details(
             format!("{}", utc.format("%Y-%m-%d %H:%M:%S"))
         };
 
-        let new_transaction = TransactionSummary {
+        let new_transaction = Transaction {
             signature,
             block,
             time,
             result,
         };
 
-        txns.push(new_transaction);
+        transactions.push(new_transaction);
     }
 
     let details = AccountDetails {
@@ -168,7 +148,7 @@ pub async fn get_account_details(
         owner,
         data_size,
         executable,
-        recent_transactions: txns,
+        recent_transactions: transactions,
     };
     log::info!("details: {:#?}", details);
 

@@ -1,56 +1,63 @@
-use crate::account::{Cluster, Error, TransactionSummary};
+use crate::{Cluster, Error};
 use fantoccini::Client;
 use select::{
     document::Document,
     node::Node,
     predicate::{Class, Name, Predicate},
 };
-use std::{thread, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    thread,
+    time::Duration,
+};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Default)]
-pub struct Transaction {
-    summary: TransactionSummary,
-    confirmation_status: String,
-    confirmations: String,
-    slot: u64,
-    recent_blockhash: String,
-    fee: f64,
-    version: String,
-    accounts: Vec<TxAccount>,
-    token_balances: Vec<TokenAccountInfo>,
-    instructions: Vec<Instruction>,
-}
-
-#[derive(Debug, Default)]
-struct Instruction {
-    pub description: String,
-    pub program: String,
-    pub accounts: Vec<IxAccount>,
-    pub instruction_data: String,
+pub struct Tx {
+    pub overview: TxOverview,
+    pub token_balances: Option<Vec<TokenAccountInfo>>,
+    pub account_inputs: Vec<TxAccountInput>,
+    pub instructions: Vec<Instruction>,
 }
 
 #[derive(Default, Debug)]
-struct TxAccount {
+pub struct Instruction {
+    description: String,
+    program: String,
+    accounts: Vec<(String, IxAccountContext)>,
+    additional_info: HashMap<String, String>,
+    hex: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct IxAccountContext {
     address: String,
-    is_writable: bool,
-    is_signer: bool,
-    is_fee_payer: bool,
-    is_program: bool,
+    attributes: Option<Vec<String>>,
+}
+
+#[derive(Default, Debug)]
+pub struct TxAccountInput {
+    address: String,
+    attributes: Vec<String>,
     sol_change: f64,
     post_balance: f64,
 }
 
 #[derive(Default, Debug)]
-struct IxAccount {
-    name: String,
-    url: String,
-    is_writable: bool,
-    is_signer: bool,
+pub struct TxOverview {
+    signature: String,
+    result: String,
+    timestamp: String,
+    confirmation_status: String,
+    confirmations: String,
+    slot: u64,
+    recent_blockhash: String,
+    fee: f64,
+    transaction_version: String,
 }
 
 #[derive(Default, Debug)]
-struct TokenAccountInfo {
+pub struct TokenAccountInfo {
     address: String,
     token_name: String,
     token_url: String,
@@ -62,10 +69,7 @@ pub async fn get_transaction_info(
     tx_id: String,
     cluster: Cluster,
     client: &Mutex<Client>,
-) -> Result<Transaction, Error> {
-    let x = String::from("2.094908999");
-    _ = x.parse::<f64>().unwrap();
-
+) -> Result<Tx, Error> {
     let url = match cluster {
         Cluster::Mainnet => format!(
             "https://explorer.solana.com/tx/{}?cluster=mainnet-beta",
@@ -82,59 +86,98 @@ pub async fn get_transaction_info(
 
     let document = Document::from(html.as_str());
 
-    let mut list = document.find(Class("list"));
-    let mut overview = list.next().unwrap().find(Name("tr"));
-    let signature = overview
+    let mut overview = TxOverview::default();
+    let mut account_inputs = vec![];
+    let mut token_balances: Option<Vec<TokenAccountInfo>> = None;
+    let mut instructions = vec![];
+
+    let cards = document
+        .find(Class("card"))
+        .filter(|x| x.parent().unwrap().attr("class").unwrap() != "inner-cards");
+
+    for card in cards {
+        let title = card.find(Class("card-header-title")).next().unwrap().text();
+        match title.trim() {
+            "Overview" => {
+                log::info!("Parsing tx overview details...");
+                overview = parse_overview(&card);
+            }
+            "Account Input(s)" => {
+                log::info!("Parsing account inputs");
+                account_inputs = parse_account_inputs(&card);
+            }
+            "Token Balances" => {
+                log::info!("Parsing token balances...");
+                token_balances = Some(parse_token_balances(&card));
+            }
+            "Program Instruction Logs" => {
+                log::info!("Parsing Program Ix Logs is unimplemented. Skipping...");
+            }
+            _ => {
+                log::info!("Parsing instruction...");
+                instructions.push(parse_instruction(&card))
+            }
+        }
+    }
+
+    let transaction = Tx {
+        overview,
+        token_balances,
+        account_inputs,
+        instructions,
+    };
+
+    log::info!("Transaction: {:#?}", transaction);
+    Ok(transaction)
+}
+
+fn parse_overview(overview: &Node) -> TxOverview {
+    let mut items = overview.find(Class("list").descendant(Name("tr")));
+    let signature = items
         .next()
         .unwrap()
         .find(Class("font-monospace"))
         .next()
         .unwrap()
         .text();
-    let result = overview
+    let result = items
         .next()
         .unwrap()
         .find(Class("bg-success-soft"))
         .next()
         .unwrap()
         .text();
-    let time = overview
+    let timestamp = items
         .next()
         .unwrap()
         .find(Class("font-monospace"))
         .next()
         .unwrap()
         .text();
-    let confirmation_status = overview
+    let confirmation_status = items
         .next()
         .unwrap()
         .find(Class("text-lg-end"))
         .next()
         .unwrap()
         .text();
-    let confirmations = overview
+    let confirmations = items
         .next()
         .unwrap()
         .find(Class("text-lg-end"))
         .next()
         .unwrap()
         .text();
-    let slot = overview
-        .next()
-        .unwrap()
-        .find(Name("a"))
-        .next()
-        .unwrap()
-        .text();
+    let slot = items.next().unwrap().find(Name("a")).next().unwrap().text();
     let slot = slot.split(',').collect::<String>().parse().unwrap();
-    let recent_blockhash = overview
+    let recent_blockhash = items
         .next()
         .unwrap()
         .find(Class("text-lg-end"))
         .next()
         .unwrap()
         .text();
-    let fee: f64 = overview
+    let fee: f64 = items
         .next()
         .unwrap()
         .find(Class("font-monospace"))
@@ -143,7 +186,7 @@ pub async fn get_transaction_info(
         .text()
         .parse()
         .unwrap();
-    let version = overview
+    let transaction_version = items
         .next()
         .unwrap()
         .find(Class("text-lg-end"))
@@ -151,8 +194,61 @@ pub async fn get_transaction_info(
         .unwrap()
         .text();
 
-    let mut accounts_vec: Vec<TxAccount> = vec![];
-    let tx_accounts = list.next().unwrap().find(Name("tr"));
+    TxOverview {
+        signature,
+        result,
+        timestamp,
+        confirmation_status,
+        confirmations,
+        slot,
+        recent_blockhash,
+        fee,
+        transaction_version,
+    }
+}
+
+fn parse_token_balances(token_balances: &Node) -> Vec<TokenAccountInfo> {
+    let token_balances = token_balances.find(Class("list").descendant(Name("tr")));
+    let mut token_accounts_info = vec![];
+
+    for info in token_balances {
+        let mut child_nodes = info.children();
+        let address = child_nodes
+            .next()
+            .unwrap()
+            .find(Name("a"))
+            .next()
+            .unwrap()
+            .text();
+        let (token_name, token_url) = {
+            let node = child_nodes.next().unwrap().find(Name("a")).next().unwrap();
+            (node.text(), node.attr("href").unwrap().to_string())
+        };
+        let change: f64 = child_nodes
+            .next()
+            .unwrap()
+            .first_child()
+            .unwrap()
+            .text()
+            .parse()
+            .unwrap();
+        let post_balance = child_nodes.next().unwrap().text();
+
+        let new_token_info = TokenAccountInfo {
+            address,
+            token_name,
+            token_url,
+            change,
+            post_balance,
+        };
+        token_accounts_info.push(new_token_info);
+    }
+    token_accounts_info
+}
+
+fn parse_account_inputs(account_inputs: &Node) -> Vec<TxAccountInput> {
+    let mut accounts_vec: Vec<TxAccountInput> = vec![];
+    let tx_accounts = account_inputs.find(Class("list").descendant(Name("tr")));
 
     for account in tx_accounts {
         let mut child_nodes = account.children();
@@ -189,38 +285,29 @@ pub async fn get_transaction_info(
             .collect::<String>()
             .parse::<f64>()
             .unwrap();
-        let attributes = child_nodes.next().unwrap().find(Class("me-1"));
+        let attribute_nodes = child_nodes.next().unwrap().find(Class("me-1"));
 
-        let mut account_attributes = vec![];
-        for quality in attributes {
-            account_attributes.push(quality.text());
+        let mut attributes = HashSet::new();
+        for quality in attribute_nodes {
+            attributes.insert(quality.text());
         }
-
-        let is_fee_payer = account_attributes.contains(&"Fee Payer".to_string());
-        let is_signer = account_attributes.contains(&"Signer".to_string());
-        let is_writable = account_attributes.contains(&"Writable".to_string());
-        let mut is_program = account_attributes.contains(&"Program".to_string());
-        is_program = if address.split_whitespace().any(|x| x == "Program") {
-            true
-        } else {
-            is_program
-        };
+        if address.split_whitespace().any(|x| x == "Program") {
+            attributes.insert("Program".to_string());
+        }
+        let attributes = attributes.into_iter().collect::<Vec<String>>();
 
         let sol_change = {
-            let multiplier: f64 = match change_sign.as_str() {
-                "+" | "0" => 1.0,
+            let multiplier: f64 = match change_sign.trim().chars().next().unwrap() {
+                '+' | '0' => 1.0,
                 _ => -1.0,
             };
 
             amount.parse::<f64>().unwrap() * multiplier
         };
 
-        let new_account = TxAccount {
+        let new_account = TxAccountInput {
             address,
-            is_writable,
-            is_signer,
-            is_fee_payer,
-            is_program,
+            attributes,
             sol_change,
             post_balance,
         };
@@ -228,143 +315,121 @@ pub async fn get_transaction_info(
         accounts_vec.push(new_account);
     }
 
-    let token_balances = list.next().unwrap().find(Name("tr"));
-    let mut token_accounts_info = vec![];
+    accounts_vec
+}
 
-    for info in token_balances {
-        let mut child_nodes = info.children();
-        let address = child_nodes
-            .next()
-            .unwrap()
-            .find(Name("a"))
-            .next()
-            .unwrap()
-            .text();
-        let (token_name, token_url) = {
-            let node = child_nodes.next().unwrap().find(Name("a")).next().unwrap();
-            (node.text(), node.attr("href").unwrap().to_string())
-        };
-        let change: f64 = child_nodes
-            .next()
-            .unwrap()
+fn parse_instruction(instructions: &Node) -> Instruction {
+    let description = instructions
+        .find(Class("card-header-title").descendant(Class("me-2")))
+        .next()
+        .unwrap()
+        .text();
+    let mut account_nodes = instructions.find(Class("list").descendant(Name("tr")));
+    let program = account_nodes
+        .next()
+        .unwrap()
+        .find(Name("a"))
+        .next()
+        .unwrap()
+        .text();
+
+    let mut accounts = Vec::new();
+    let mut additional_info = HashMap::new();
+    let mut hex = None;
+
+    for row in account_nodes {
+        if row
             .first_child()
             .unwrap()
             .text()
-            .parse()
-            .unwrap();
-        let post_balance = child_nodes.next().unwrap().text();
-
-        let new_token_info = TokenAccountInfo {
-            address,
-            token_name,
-            token_url,
-            change,
-            post_balance,
-        };
-        token_accounts_info.push(new_token_info);
-    }
-
-    let mut instructions = document
-        .find(Class("mt-n3"))
-        .next()
-        .unwrap()
-        .children()
-        .collect::<Vec<Node>>();
-    _ = instructions.pop();
-    instructions = instructions[5..].to_vec();
-    let mut instructions_vec = vec![];
-
-    for instruction in instructions.iter() {
-        let description = instruction
-            .find(Class("card-header").descendant(Class("me-2")))
+            .split("<span")
             .next()
             .unwrap()
-            .text();
-        let mut ix_account_nodes = instruction.find(Class("list").child(Name("tr")));
-        let program = ix_account_nodes
-            .next()
-            .unwrap()
-            .find(Name("a"))
-            .next()
-            .unwrap()
-            .text();
-        let mut ix_accounts_vec = vec![];
-        let mut instruction_data = String::new();
-
-        for account in ix_account_nodes {
-            if account
-                .first_child()
-                .unwrap()
-                .text()
-                .split("<span")
-                .next()
-                .unwrap()
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<&str>>()
+            .join(" ")
+            == "Instruction Data"
+        {
+            let data = row
+                .find(
+                    Class("text-lg-end")
+                        .descendant(Class("mb-0"))
+                        .descendant(Name("span")),
+                )
+                .map(|x| x.text().replace("\u{2003}", ""))
+                .collect::<String>()
                 .split_whitespace()
-                .take(2)
-                .collect::<Vec<&str>>()
-                .join(" ")
-                == "Instruction Data"
-            {
-                instruction_data = account
-                    .find(
-                        Class("text-lg-end")
-                            .descendant(Class("mb-0"))
-                            .descendant(Name("span")),
-                    )
-                    .map(|x| {println!("what's popping\n"); x.text().replace("\u{2003}", "")})
-                    .collect::<String>().split_whitespace().collect::<String>();
-                let mid = instruction_data.len()/2;
-                instruction_data = instruction_data[0..mid].to_string();
-                
-                break;
-            }
-            let (name, url) = {
-                let info = account.find(Name("a")).next().unwrap();
-                (info.text(), info.attr("href").unwrap().to_string())
-            };
+                .collect::<String>();
+            let mid = data.len() / 2;
+            hex = Some(data[0..mid].to_string());
 
-            let attributes: Vec<String> = account.find(Class("badge")).map(|x| x.text()).collect();
-            let is_signer = attributes.contains(&"Signer".to_string());
-            let is_writable = attributes.contains(&"Writable".to_string());
-
-            let new_account = IxAccount {
-                name,
-                url,
-                is_writable,
-                is_signer,
-            };
-
-            ix_accounts_vec.push(new_account);
+            break;
         }
 
-        let new_instruction = Instruction {
-            description,
-            program,
-            accounts: ix_accounts_vec,
-            instruction_data,
+        let mut child_nodes = row.children();
+        let first_child = child_nodes.next().unwrap();
+        let maybe_unknown = first_child.find(Class("me-2")).next();
+        let title = if maybe_unknown.is_some() {
+            maybe_unknown.unwrap().text()
+        } else {
+            first_child.text()
         };
+        if let Some(address) = row.find(Name("a")).next() {
+            let attributes = row
+                .find(Class("badge"))
+                .map(|x| x.text())
+                .collect::<Vec<String>>();
+            let attributes = if attributes.is_empty() {
+                None
+            } else {
+                Some(attributes)
+            };
 
-        instructions_vec.push(new_instruction);
+            let context = IxAccountContext {
+                address: address.text(),
+                attributes,
+            };
+            accounts.push((title, context));
+        } else {
+            // we don't have an account, we get the extra information
+            let value = row.find(Class("font-monospace")).next().unwrap().text();
+            additional_info.insert(title, value);
+        }
     }
 
-    let transaction = Transaction {
-        summary: TransactionSummary {
-            signature,
-            block: slot,
-            time,
-            result,
-        },
-        confirmation_status,
-        confirmations,
-        slot,
-        recent_blockhash,
-        fee,
-        version,
-        accounts: accounts_vec,
-        token_balances: token_accounts_info,
-        instructions: instructions_vec,
-    };
+    // Only attempt sort if we have accounts labelled as Account#1, Account#2, etc
+    if accounts[0].0.contains("Account #") {
+        accounts.sort_by(|a, b| sort_accounts(a, b));
+    }
 
-    log::info!("Transaction: {:#?}", transaction);
-    Ok(transaction)
+    Instruction {
+        description,
+        program,
+        accounts,
+        additional_info,
+        hex,
+    }
+}
+
+fn sort_accounts(
+    a: &(String, IxAccountContext),
+    b: &(String, IxAccountContext),
+) -> std::cmp::Ordering {
+    let a_position =
+        a.0.split('#')
+            .last()
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap();
+    let b_position =
+        b.0.split('#')
+            .last()
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap();
+
+    a_position.cmp(&b_position)
 }
