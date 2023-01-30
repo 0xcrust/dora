@@ -1,26 +1,27 @@
-use crate::{Cluster, Error};
+use crate::Error;
 use fantoccini::Client;
 use select::{
     document::Document,
     node::Node,
     predicate::{Class, Name, Predicate},
 };
+use serde::Serialize;
+use std::sync::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     thread,
     time::Duration,
 };
-use tokio::sync::Mutex;
 
-#[derive(Debug, Default)]
-pub struct Tx {
+#[derive(Debug, Default, Serialize)]
+pub struct Transaction {
     pub overview: TxOverview,
     pub token_balances: Option<Vec<TokenAccountInfo>>,
     pub account_inputs: Vec<TxAccountInput>,
     pub instructions: Vec<Instruction>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 pub struct Instruction {
     description: String,
     program: String,
@@ -29,13 +30,13 @@ pub struct Instruction {
     hex: Option<String>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct IxAccountContext {
     address: String,
     attributes: Option<Vec<String>>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 pub struct TxAccountInput {
     address: String,
     attributes: Vec<String>,
@@ -43,7 +44,7 @@ pub struct TxAccountInput {
     post_balance: f64,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 pub struct TxOverview {
     signature: String,
     result: String,
@@ -56,7 +57,7 @@ pub struct TxOverview {
     transaction_version: String,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 pub struct TokenAccountInfo {
     address: String,
     token_name: String,
@@ -65,21 +66,10 @@ pub struct TokenAccountInfo {
     post_balance: String,
 }
 
-pub async fn get_transaction_info(
-    tx_id: String,
-    cluster: Cluster,
-    client: &Mutex<Client>,
-) -> Result<Tx, Error> {
-    let url = match cluster {
-        Cluster::Mainnet => format!(
-            "https://explorer.solana.com/tx/{}?cluster=mainnet-beta",
-            tx_id
-        ),
-        Cluster::Devnet => format!("https://explorer.solana.com/tx/{}?cluster=devnet", tx_id),
-    };
+pub async fn get_transaction_info(url: &str, client: &Mutex<Client>) -> Result<Transaction, Error> {
     log::info!("url: {}", url);
 
-    let mut webdriver = client.lock().await;
+    let mut webdriver = client.lock().unwrap();
     webdriver.goto(&url).await?;
     thread::sleep(Duration::from_secs(20));
     let html = webdriver.source().await?;
@@ -120,14 +110,13 @@ pub async fn get_transaction_info(
         }
     }
 
-    let transaction = Tx {
+    let transaction = Transaction {
         overview,
         token_balances,
         account_inputs,
         instructions,
     };
 
-    log::info!("Transaction: {:#?}", transaction);
     Ok(transaction)
 }
 

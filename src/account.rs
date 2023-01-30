@@ -1,15 +1,16 @@
-use crate::{Cluster, Error};
+use crate::Error;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use fantoccini::Client;
 use select::{
     document::Document,
     predicate::{Class, Name, Predicate},
 };
+use serde::Serialize;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 pub struct AccountDetails {
     pub address: String,
     pub balance: f64,
@@ -19,7 +20,7 @@ pub struct AccountDetails {
     pub recent_transactions: Vec<Transaction>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 pub struct Transaction {
     pub signature: String,
     pub block: u64,
@@ -27,25 +28,13 @@ pub struct Transaction {
     pub result: String,
 }
 
-pub async fn get_account_details(
-    address: String,
-    cluster: Cluster,
+pub async fn get_account_info(
+    url: &str,
     txns_count: usize,
     client: &Mutex<Client>,
 ) -> Result<AccountDetails, Error> {
-    let url = match cluster {
-        Cluster::Mainnet => format!(
-            "https://explorer.solana.com/address/{}?cluster=mainnet-beta",
-            address
-        ),
-        Cluster::Devnet => format!(
-            "https://explorer.solana.com/address/{}?cluster=devnet",
-            address
-        ),
-    };
-
     log::info!("url: {}", url);
-    let mut webdriver = client.lock().await;
+    let mut webdriver = client.lock().unwrap();
     webdriver.goto(&url).await?;
     thread::sleep(Duration::from_secs(20));
     let html = webdriver.source().await?;
@@ -149,11 +138,6 @@ pub async fn get_account_details(
         data_size,
         executable,
         recent_transactions: transactions,
-    };
-    log::info!("details: {:#?}", details);
-
-    let details = AccountDetails {
-        ..Default::default()
     };
 
     Ok(details)
