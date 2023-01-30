@@ -66,12 +66,18 @@ pub struct TokenAccountInfo {
     post_balance: String,
 }
 
-pub async fn get_transaction_info(url: &str, client: &Mutex<Client>) -> Result<Transaction, Error> {
-    log::info!("url: {}", url);
+pub async fn get_transaction_info(
+    url: &str,
+    wait_time: u64,
+    client: &Mutex<Client>,
+) -> Result<Transaction, Error> {
+    log::info!("Parsing data for url: {}", url);
 
     let mut webdriver = client.lock().await;
     webdriver.goto(url).await?;
-    thread::sleep(Duration::from_secs(20));
+
+    log::info!("Hold on. Retrieving document...");
+    thread::sleep(Duration::from_secs(wait_time));
     let html = webdriver.source().await?;
 
     let document = Document::from(html.as_str());

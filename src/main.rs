@@ -1,12 +1,9 @@
-use args::{Args, Command};
 use clap::Parser;
-use fantoccini::{Client, ClientBuilder};
-use serde_json::map::Map;
+use config::{Args, Cluster, Command, Config};
 use std::{fs::File, io::Write};
-use tokio::sync::Mutex;
 
 mod account;
-mod args;
+mod config;
 mod transaction;
 
 pub type Error = Box<dyn std::error::Error>;
@@ -16,10 +13,18 @@ async fn main() -> Result<(), Error> {
     dotenv::dotenv().ok();
     env_logger::init();
 
-    let client = new_webdriver_client().await.expect("Client not created");
+    let config_file = File::open("config.yml").expect(
+        "Missing config.yml with required fields: cluster, wait_time, tx_limit, output_file_path",
+    );
+    let config: Config = serde_yaml::from_reader(config_file).expect("Couldn't read config values");
+    log::info!("Retrieved configuration from config.yml: {:?}", &config);
+
+    let client = config::new_webdriver_client()
+        .await
+        .expect("Client not created");
 
     let args = Args::parse();
-    let cluster = match args.cluster.to_lowercase().trim() {
+    let cluster = match config.cluster.to_lowercase().trim() {
         "mainnet" => Cluster::Mainnet,
         "devnet" => Cluster::Devnet,
         "testnet" => Cluster::Testnet,
@@ -28,73 +33,41 @@ async fn main() -> Result<(), Error> {
             Cluster::Mainnet
         }
     };
+    log::info!("Cluster detected: {:?}", cluster);
 
-    let result = match args.command {
-        Some(Command::Account { tx_limit }) => {
-            let url = construct_url(&cluster, &Command::Account { tx_limit }, &args.id);
-            let result = account::get_account_info(&url, tx_limit as usize, &client)
-                .await
-                .expect("Failed getting account info");
+    let result = match args.parse.to_lowercase().trim() {
+        "account" => {
+            let url = config::construct_url(&cluster, &Command::Account, &args.id);
+            let result = account::get_account_info(
+                &url,
+                config.tx_limit as usize,
+                config.wait_time,
+                &client,
+            )
+            .await
+            .expect("Failed getting account info");
+            log::info!("Retrieved results for account {}. Converting...", &args.id);
             serde_json::to_string_pretty(&result).expect("Failed converting result to json")
         }
-        Some(Command::Transaction) => {
-            let url = construct_url(&cluster, &Command::Transaction, &args.id);
-            let result = transaction::get_transaction_info(&url, &client)
+        "transaction" => {
+            let url = config::construct_url(&cluster, &Command::Transaction, &args.id);
+            let result = transaction::get_transaction_info(&url, config.wait_time, &client)
                 .await
                 .expect("Failed getting transaction info");
+            log::info!("Retrieved results for account {}. Converting...", &args.id);
             serde_json::to_string_pretty(&result).expect("Failed converting result to json")
         }
-        None => {
+        _ => {
             panic!("Program shutdown, no command detected");
         }
     };
 
-    let path = match args.output {
-        Some(file_path) => file_path,
-        None => "results.json".to_string(),
-    };
-
+    let path = config.output_file_path;
     let mut handle = File::create(&path).expect("Invalid file path");
     handle
         .write_all(result.as_bytes())
         .unwrap_or_else(|_| panic!("Failed writing to {}", path));
-
-    log::info!("Results retrieved!. Check them out at {}", &path);
+    log::info!("Wrote results to {}", &path);
 
     Ok(())
-}
-
-pub enum Cluster {
-    Devnet,
-    Mainnet,
-    Testnet,
-}
-
-pub async fn new_webdriver_client() -> Result<Mutex<Client>, Error> {
-    let mut caps = Map::new();
-    let options = serde_json::json!({ "args": ["--headless", "--disable-gpu"] });
-    caps.insert("goog:chromeOptions".to_string(), options);
-    let webdriver_client = ClientBuilder::rustls()
-        .capabilities(caps)
-        .connect("http://localhost:4444")
-        .await?;
-    Ok(Mutex::new(webdriver_client))
-}
-
-fn construct_url(cluster: &Cluster, command: &Command, id: &str) -> String {
-    let route = match command {
-        Command::Account { tx_limit: _ } => "address",
-        Command::Transaction => "tx",
-    };
-    match cluster {
-        Cluster::Mainnet => format!("https://explorer.solana.com/{}/{}", route, id),
-        Cluster::Devnet => format!(
-            "https://explorer.solana.com/{}/{}?cluster=devnet",
-            route, id
-        ),
-        Cluster::Testnet => format!(
-            "https://explorer.solana.com/{}/{}?cluster=mainnet-beta",
-            route, id
-        ),
-    }
 }

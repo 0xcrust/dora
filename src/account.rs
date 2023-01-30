@@ -29,13 +29,15 @@ pub struct Transaction {
 
 pub async fn get_account_info(
     url: &str,
-    txns_count: usize,
+    txns_limit: usize,
+    wait_time: u64,
     client: &Mutex<Client>,
 ) -> Result<AccountDetails, Error> {
-    log::info!("url: {}", url);
+    log::info!("Parsing data for url: {}", url);
     let mut webdriver = client.lock().await;
     webdriver.goto(url).await?;
-    thread::sleep(Duration::from_secs(20));
+    log::info!("Hold on. Waiting for page load...");
+    thread::sleep(Duration::from_secs(wait_time));
     let html = webdriver.source().await?;
 
     let document = Document::from(html.as_str());
@@ -94,7 +96,7 @@ pub async fn get_account_info(
     let mut transactions: Vec<Transaction> = vec![];
 
     for transaction in transaction_nodes {
-        if transactions.len() == txns_count {
+        if transactions.len() == txns_limit {
             break;
         }
         let mut details = transaction.find(Name("td"));

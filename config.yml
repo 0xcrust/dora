@@ -1,0 +1,5 @@
+cluster: devnet
+wait_time: 15
+tx_limit: 20
+output_file_path: results.json
+
