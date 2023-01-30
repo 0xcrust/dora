@@ -1,13 +1,12 @@
-//#![allow(dead_code)]
-
-use clap::{Parser, Subcommand};
+use args::{Args, Command};
+use clap::Parser;
 use fantoccini::{Client, ClientBuilder};
 use serde_json::map::Map;
-use std::sync::Mutex;
-
 use std::{fs::File, io::Write};
+use tokio::sync::Mutex;
 
 mod account;
+mod args;
 mod transaction;
 
 pub type Error = Box<dyn std::error::Error>;
@@ -32,7 +31,6 @@ async fn main() -> Result<(), Error> {
 
     let result = match args.command {
         Some(Command::Account { tx_limit }) => {
-        //Command::Account {tx_limit} => {
             let url = construct_url(&cluster, &Command::Account { tx_limit }, &args.id);
             let result = account::get_account_info(&url, tx_limit as usize, &client)
                 .await
@@ -40,7 +38,6 @@ async fn main() -> Result<(), Error> {
             serde_json::to_string_pretty(&result).expect("Failed converting result to json")
         }
         Some(Command::Transaction) => {
-        //Command::Transaction => {
             let url = construct_url(&cluster, &Command::Transaction, &args.id);
             let result = transaction::get_transaction_info(&url, &client)
                 .await
@@ -48,7 +45,6 @@ async fn main() -> Result<(), Error> {
             serde_json::to_string_pretty(&result).expect("Failed converting result to json")
         }
         None => {
-        //_ => {
             panic!("Program shutdown, no command detected");
         }
     };
@@ -60,8 +56,10 @@ async fn main() -> Result<(), Error> {
 
     let mut handle = File::create(&path).expect("Invalid file path");
     handle
-        .write(result.as_bytes())
-        .expect(&format!("Failed writing to {}", &path));
+        .write_all(result.as_bytes())
+        .unwrap_or_else(|_| panic!("Failed writing to {}", path));
+
+    log::info!("Results retrieved!. Check them out at {}", &path);
 
     Ok(())
 }
@@ -81,32 +79,6 @@ pub async fn new_webdriver_client() -> Result<Mutex<Client>, Error> {
         .connect("http://localhost:4444")
         .await?;
     Ok(Mutex::new(webdriver_client))
-}
-
-
-#[derive(Parser)]
-#[clap(author, version, about, long_about=None)]
-struct Args {
-    #[command(subcommand)]
-    command: Option<Command>,
-
-    #[clap(short, long, help = "Id of the account|tx to be parsed")]
-    id: String,
-
-    #[clap(short, long, help = "Cluster (mainnet|devnet|testnet)")]
-    cluster: String,
-
-    output: Option<String>,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    Account {
-        
-        #[arg(short, long, help = "Number of recent transactions to retrieve")]
-        tx_limit: u64,
-    },
-    Transaction,
 }
 
 fn construct_url(cluster: &Cluster, command: &Command, id: &str) -> String {

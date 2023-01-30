@@ -6,9 +6,8 @@ use select::{
     predicate::{Class, Name, Predicate},
 };
 use serde::Serialize;
-use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
+use std::{thread, time::Duration};
+use tokio::sync::Mutex;
 
 #[derive(Default, Debug, Serialize)]
 pub struct AccountDetails {
@@ -34,8 +33,8 @@ pub async fn get_account_info(
     client: &Mutex<Client>,
 ) -> Result<AccountDetails, Error> {
     log::info!("url: {}", url);
-    let mut webdriver = client.lock().unwrap();
-    webdriver.goto(&url).await?;
+    let mut webdriver = client.lock().await;
+    webdriver.goto(url).await?;
     thread::sleep(Duration::from_secs(20));
     let html = webdriver.source().await?;
 

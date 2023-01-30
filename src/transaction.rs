@@ -6,12 +6,12 @@ use select::{
     predicate::{Class, Name, Predicate},
 };
 use serde::Serialize;
-use std::sync::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     thread,
     time::Duration,
 };
+use tokio::sync::Mutex;
 
 #[derive(Debug, Default, Serialize)]
 pub struct Transaction {
@@ -69,8 +69,8 @@ pub struct TokenAccountInfo {
 pub async fn get_transaction_info(url: &str, client: &Mutex<Client>) -> Result<Transaction, Error> {
     log::info!("url: {}", url);
 
-    let mut webdriver = client.lock().unwrap();
-    webdriver.goto(&url).await?;
+    let mut webdriver = client.lock().await;
+    webdriver.goto(url).await?;
     thread::sleep(Duration::from_secs(20));
     let html = webdriver.source().await?;
 
@@ -226,7 +226,7 @@ fn parse_token_balances(token_balances: &Node) -> Vec<TokenAccountInfo> {
         let new_token_info = TokenAccountInfo {
             address,
             token_name,
-            token_url,
+            token_url: normalize_url(&token_url),
             change,
             post_balance,
         };
@@ -309,7 +309,7 @@ fn parse_account_inputs(account_inputs: &Node) -> Vec<TxAccountInput> {
 
 fn parse_instruction(instructions: &Node) -> Instruction {
     let description = instructions
-        .find(Class("card-header-title").descendant(Class("me-2")))
+        .find(Class("card-header-title"))
         .next()
         .unwrap()
         .text();
@@ -346,7 +346,7 @@ fn parse_instruction(instructions: &Node) -> Instruction {
                         .descendant(Class("mb-0"))
                         .descendant(Name("span")),
                 )
-                .map(|x| x.text().replace("\u{2003}", ""))
+                .map(|x| x.text().replace('\u{2003}', ""))
                 .collect::<String>()
                 .split_whitespace()
                 .collect::<String>();
@@ -358,12 +358,13 @@ fn parse_instruction(instructions: &Node) -> Instruction {
 
         let mut child_nodes = row.children();
         let first_child = child_nodes.next().unwrap();
-        let maybe_unknown = first_child.find(Class("me-2")).next();
-        let title = if maybe_unknown.is_some() {
-            maybe_unknown.unwrap().text()
+        let maybe_title = first_child.find(Class("me-2")).next();
+        let title = if let Some(title) = maybe_title {
+            title.text()
         } else {
             first_child.text()
         };
+
         if let Some(address) = row.find(Name("a")).next() {
             let attributes = row
                 .find(Class("badge"))
@@ -389,7 +390,7 @@ fn parse_instruction(instructions: &Node) -> Instruction {
 
     // Only attempt sort if we have accounts labelled as Account#1, Account#2, etc
     if accounts[0].0.contains("Account #") {
-        accounts.sort_by(|a, b| sort_accounts(a, b));
+        accounts.sort_by(sort_accounts);
     }
 
     Instruction {
@@ -421,4 +422,8 @@ fn sort_accounts(
             .unwrap();
 
     a_position.cmp(&b_position)
+}
+
+fn normalize_url(url: &str) -> String {
+    format!("https://explorer.solana.com{}", url)
 }
