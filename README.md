@@ -1,4 +1,4 @@
-Web scraper for retrieving transaction and account details from [solana explorer](https://explorer.solana.com).
+## Web scraper for retrieving transaction and account details from [solana explorer](https://explorer.solana.com).
 
 ### Build
 * Build the program with cargo:
